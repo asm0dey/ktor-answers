@@ -10,26 +10,33 @@ import liquibase.command.core.UpdateCommandStep.COMMAND_NAME
 import liquibase.command.core.helpers.DbUrlConnectionCommandStep.DATABASE_ARG
 import liquibase.database.DatabaseFactory
 import liquibase.database.jvm.JdbcConnection
-import org.jetbrains.exposed.sql.Database
+import org.jooq.impl.DSL
 import java.sql.DriverManager
 
 fun main(args: Array<String>): Unit = io.ktor.server.netty.EngineMain.main(args)
 
 fun Application.module() {
     migrateDb()
-    connectToDb()
+//    connectToDb()
     configureSerialization()
-    configureRouting()
+    configureRouting(dsl)
 }
 
-fun Application.connectToDb() = with(environment.config){
-    Database.connect(
-        property("database.url").getString(),
-        user = property("database.username").getString(),
-        password = property("database.password").getString()
+//fun Application.connectToDb() = with(environment.config){
+//
+//    Database.connect(
+//        property("database.url").getString(),
+//        user = property("database.username").getString(),
+//        password = property("database.password").getString()
+//    )
+//}
+
+val Application.dsl
+    get() = DSL.using(
+        environment.config.property("database.url").getString(),
+        environment.config.property("database.username").getString(),
+        environment.config.property("database.password").getString()
     )
-}
-
 fun Application.migrateDb() = with(environment.config) {
     migrate(
         property("database.url").getString(),

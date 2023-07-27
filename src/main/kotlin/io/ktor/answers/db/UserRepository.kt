@@ -1,9 +1,12 @@
 package io.ktor.answers.db
 
+import io.ktor.answers.generated.public_.Tables.*
+import io.ktor.answers.generated.public_.tables.records.*
 import io.ktor.answers.model.*
 import io.ktor.answers.routing.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.datetime.LocalDate
+import kotlinx.datetime.*
+import kotlinx.datetime.TimeZone.Companion.UTC
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.JoinType.INNER
 import org.jetbrains.exposed.sql.JoinType.LEFT
@@ -15,29 +18,38 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.lessEq
 import org.jetbrains.exposed.sql.kotlin.datetime.date
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import org.jooq.DSLContext
+import org.jooq.DataType
+import org.jooq.Field
+import org.jooq.TableField
+import org.jooq.impl.DSL
+import org.jooq.impl.SQLDataType
+import org.jooq.kotlin.coroutines.transactionCoroutine
 
 val defaultQueryParams = CommonQueryParams(0, 20, null, null, null, ASC)
 
-class UserRepository {
+class UserRepository(val dsl: DSLContext) {
     suspend fun allUsers(
         parsed: CommonQueryParams = defaultQueryParams,
-    ): List<User> = suspendTransaction {
-        UserDAO
-            .find {
-                val active = UserTable.active eq true
-                val from = if (parsed.fromDate != null) (UserTable.createdAt.date() greaterEq parsed.fromDate) else null
-                val to = if (parsed.toDate != null) UserTable.createdAt.date() lessEq parsed.toDate else null
-                listOfNotNull(active, to, from).compoundAnd()
-            }
-            .limit(parsed.pageSize, if (parsed.page != null) parsed.pageSize.toLong() * (parsed.page - 1) else 0)
+    ): List<User> = dsl.transactionCoroutine {
+        var cond = USERS.ACTIVE.isTrue
+        if (parsed.fromDate != null) cond =
+            cond.and(USERS.CREATED_AT.greaterOrEqual(parsed.fromDate.toJavaLocalDate().atStartOfDay()))
+        if (parsed.toDate != null) cond =
+            cond.and(USERS.CREATED_AT.lessThan(parsed.toDate.toJavaLocalDate().atStartOfDay()))
+        it.dsl()
+            .selectFrom(USERS)
+            .where(cond)
             .orderBy(
                 when (parsed.sortBy ?: "name") {
-                    "name" -> UserTable.name
-                    "creation" -> UserTable.createdAt
+                    "name" -> USERS.NAME
+                    "creation" -> USERS.CREATED_AT
                     else -> error("Unsupported sort column: ${parsed.sortBy}")
-                } to parsed.order
+                }
             )
-            .map(UserDAO::toDTO)
+            .asSequence()
+            .map(::toUser)
+            .toList()
     }
 
     suspend fun userById(id: Long): UserDAO? = suspendTransaction {
@@ -49,67 +61,82 @@ class UserRepository {
     suspend fun usersByIds(
         ids: List<Long>,
         queryParams: CommonQueryParams = defaultQueryParams,
-    ): List<User> = suspendTransaction {
-        UserDAO
-            .find {
-                val active = UserTable.active eq true
-                val inIds = UserTable.id inList ids
-                val from =
-                    if (queryParams.fromDate != null) (UserTable.createdAt.date() greaterEq queryParams.fromDate) else null
-                val to = if (queryParams.toDate != null) UserTable.createdAt.date() lessEq queryParams.toDate else null
-                listOfNotNull(active, inIds, to, from).compoundAnd()
-            }
-            .limit(
-                queryParams.pageSize,
-                if (queryParams.page != null) queryParams.pageSize.toLong() * (queryParams.page - 1) else 0
-            )
+    ): List<User> = dsl.transactionCoroutine {
+        var cond = USERS.ACTIVE.isTrue.and(USERS.ID.`in`(ids))
+        if (queryParams.fromDate != null)
+            cond = cond.and(USERS.CREATED_AT.greaterOrEqual(queryParams.fromDate.toJavaLocalDate().atStartOfDay()))
+        if (queryParams.toDate != null)
+            cond = cond.and(USERS.CREATED_AT.lessThan(queryParams.toDate.toJavaLocalDate().atStartOfDay()))
+        it.dsl()
+            .selectFrom(USERS)
+            .where(cond)
             .orderBy(
                 when (queryParams.sortBy ?: "name") {
-                    "name" -> UserTable.name
-                    "creation" -> UserTable.createdAt
+                    "name" -> USERS.NAME
+                    "creation" -> USERS.CREATED_AT
                     else -> error("Unsupported sort column: ${queryParams.sortBy}")
-                } to queryParams.order
+                }.sortBy(queryParams)
             )
-            .map(UserDAO::toDTO)
-
+            .limit(
+                if (queryParams.page != null) queryParams.pageSize.toLong() * (queryParams.page - 1) else 0,
+                queryParams.pageSize
+            )
+            .asSequence()
+            .map (::toUser)
+            .toList()
     }
+    private fun Field<*>.sortBy(queryParams: CommonQueryParams) = if (queryParams.order.name.startsWith("ASC")) sortAsc() else sortDesc()
+
+    private fun toUser(usersRecord: UsersRecord) = User(
+        usersRecord[USERS.ID],
+        usersRecord[USERS.NAME],
+        usersRecord[USERS.ACTIVE],
+        usersRecord[USERS.EMAIL],
+        usersRecord[USERS.CREATED_AT].toKotlinLocalDateTime().toInstant(UTC),
+        usersRecord[USERS.DISPLAY_NAME],
+        usersRecord[USERS.LOCATION],
+        usersRecord[USERS.ABOUT_ME],
+        usersRecord[USERS.LINK]
+    )
 
     suspend fun commentsByIds(
         ids: List<Long>,
         queryParams: CommonQueryParams = defaultQueryParams,
-    ): List<Comment> = suspendTransaction {
-        val text = ContentTable.text.min().alias("comment_text")
-        val createdAt = ContentTable.createdAt.min().alias("comment_created")
-        val author = ContentTable.author.min().alias("author")
-        val votes = coalesce(VoteTable.value.sum(), shortLiteral(0)).alias("votes")
-        CommentTable
-            .join(ContentTable, INNER, CommentTable.data, ContentTable.id)
-            .join(UserTable, INNER, ContentTable.author, UserTable.id)
-            .join(VoteTable, LEFT, VoteTable.content, ContentTable.id)
-            .slice(CommentTable.id, text, createdAt, author, votes)
-            .select { contentFilters(ids, queryParams.fromDate, queryParams.toDate) }
-            .groupBy(CommentTable.id)
-            .limit(
-                queryParams.pageSize,
-                if (queryParams.page != null) queryParams.pageSize.toLong() * (queryParams.page - 1) else 0
-            )
+    ): List<Comment> = dsl.transactionCoroutine {
+        val text = DSL.min(CONTENT.TEXT)
+        val createdAt = DSL.min(CONTENT.CREATED_AT)
+        val author = DSL.min(CONTENT.AUTHOR_ID)
+        val votes = DSL.coalesce(DSL.sum(VOTE.CONTENT).cast(SQLDataType.INTEGER), 0)
+        it.dsl()
+            .select(COMMENT.ID, text, createdAt, author, votes)
+            .from(COMMENT)
+            .innerJoin(CONTENT).on(COMMENT.DATA.eq(CONTENT.ID))
+            .innerJoin(USERS).on(CONTENT.AUTHOR_ID.eq(USERS.ID))
+            .leftJoin(VOTE).on(VOTE.CONTENT.eq(CONTENT.ID))
+            .where(COMMENT.ID.`in`(ids))
+            .groupBy(COMMENT.ID)
             .orderBy(
                 when (queryParams.sortBy ?: "creation") {
                     "creation" -> createdAt
                     "votes" -> votes
                     else -> error("Unsupported sort predicate: ${queryParams.sortBy}")
-                }, queryParams.order
+                }.sortBy(queryParams)
             )
+            .limit(
+                if (queryParams.page != null) queryParams.pageSize.toLong() * (queryParams.page - 1) else 0,
+                queryParams.pageSize
+            )
+            .asSequence()
             .map {
                 Comment(
-                    it[CommentTable.id].value,
-                    it[text]!!,
-                    it[createdAt]!!,
-                    it[author]!!.value,
-                    it[votes].toInt()
+                    it[COMMENT.ID],
+                    it[text],
+                    it[createdAt].toKotlinLocalDateTime().toInstant(UTC),
+                    it[author],
+                    it[votes]
                 )
             }
-
+            .toList()
     }
 
     suspend fun questionsByIds(

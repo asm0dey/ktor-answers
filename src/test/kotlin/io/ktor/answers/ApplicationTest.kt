@@ -20,7 +20,7 @@ class ApplicationTest : AbstractDbTest() {
         }
         application {
             migrateDb()
-            configureRouting()
+            configureRouting(dsl)
         }
         client.get("/").apply {
             assertEquals(HttpStatusCode.OK, status)

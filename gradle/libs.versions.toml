@@ -8,13 +8,15 @@ org-jetbrains-kotlin-plugin-serialization = { id = "org.jetbrains.kotlin.plugin.
 
 [versions]
 
-kotlin = "1.8.21"
+kotlin = "1.8.22"
 
 ktor = "2.3.0"
 
 exposed = "0.41.1"
 
 testcontainers = "1.18.1"
+
+jooq = "3.18.5"
 
 [libraries]
 
@@ -59,3 +61,7 @@ ktor-server-tests-jvm = { group = "io.ktor", name = "ktor-server-tests-jvm", ver
 testcontainers-postgres = { group = "org.testcontainers", name = "postgresql", version.ref = "testcontainers" }
 
 testcontainers-jupiter = { group = "org.testcontainers", name = "junit-jupiter", version.ref = "testcontainers" }
+
+jooq = { group = "org.jooq", name = "jooq", version.ref = "jooq" }
+jooq-kotlin = { group = "org.jooq", name = "jooq-kotlin", version.ref = "jooq" }
+jooq-kotlin-coroutines = { group = "org.jooq", name = "jooq-kotlin-coroutines", version.ref = "jooq" }
